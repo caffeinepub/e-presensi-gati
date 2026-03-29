@@ -1,4 +1,13 @@
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Toaster } from "@/components/ui/sonner";
 import { Download, FileBarChart, Loader2 } from "lucide-react";
 import { ThemeProvider } from "next-themes";
@@ -26,6 +35,35 @@ export default function App() {
   const [scriptsError, setScriptsError] = useState(false);
   const [isGeneratingPDF, setIsGeneratingPDF] = useState(false);
   const [isGeneratingRekapPDF, setIsGeneratingRekapPDF] = useState(false);
+
+  // Rekap filter dialog state
+  const [rekapDialogOpen, setRekapDialogOpen] = useState(false);
+  const [selectedDesas, setSelectedDesas] = useState<Set<string>>(new Set());
+  const [selectedBulans, setSelectedBulans] = useState<Set<string>>(new Set());
+
+  // Derived available options from records
+  const availableDesas = Array.from(
+    new Set(records.map((r) => r.asalDesa || "(Tidak Diisi)")),
+  ).sort((a, b) => a.localeCompare(b, "id"));
+
+  const availableBulans = (() => {
+    const seen = new Map<string, string>();
+    for (const record of records) {
+      const ms = Number(record.waktuHadir / BigInt(1_000_000));
+      const date = new Date(ms);
+      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+      if (!seen.has(key)) {
+        const label = new Intl.DateTimeFormat("id-ID", {
+          year: "numeric",
+          month: "long",
+        }).format(date);
+        seen.set(key, label);
+      }
+    }
+    return Array.from(seen.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([key, label]) => ({ key, label }));
+  })();
 
   useEffect(() => {
     let script1: HTMLScriptElement | null = null;
@@ -259,7 +297,7 @@ export default function App() {
     }
   };
 
-  const handleDownloadRekapPDF = async () => {
+  const handleDownloadRekapPDF = () => {
     if (!scriptsLoaded) {
       toast.error(
         "Library PDF belum siap. Silakan tunggu sebentar dan coba lagi.",
@@ -272,6 +310,27 @@ export default function App() {
     }
     if (records.length === 0) {
       toast.error("Tidak ada data untuk diekspor");
+      return;
+    }
+    setSelectedDesas(new Set(availableDesas));
+    setSelectedBulans(new Set(availableBulans.map((b) => b.key)));
+    setRekapDialogOpen(true);
+  };
+
+  const handleConfirmRekapDownload = async () => {
+    setRekapDialogOpen(false);
+
+    // Filter records based on selected desas and bulans
+    const filteredRecords = records.filter((record) => {
+      const desa = record.asalDesa || "(Tidak Diisi)";
+      const ms = Number(record.waktuHadir / BigInt(1_000_000));
+      const date = new Date(ms);
+      const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+      return selectedDesas.has(desa) && selectedBulans.has(monthKey);
+    });
+
+    if (filteredRecords.length === 0) {
+      toast.error("Tidak ada data sesuai filter yang dipilih");
       return;
     }
 
@@ -328,7 +387,7 @@ export default function App() {
       const bulanMap = new Map<MonthKey, { label: string; count: number }>();
       const crossMap = new Map<MonthKey, Map<string, number>>();
 
-      for (const record of records) {
+      for (const record of filteredRecords) {
         const ms = Number(record.waktuHadir / BigInt(1_000_000));
         const date = new Date(ms);
         const desa = record.asalDesa || "(Tidak Diisi)";
@@ -494,7 +553,7 @@ export default function App() {
       const crossTotalRow = [
         "Total",
         ...sortedDesas.map((d) => desaMap.get(d) ?? 0),
-        records.length,
+        filteredRecords.length,
       ];
       crossRows.push(crossTotalRow);
 
@@ -556,6 +615,45 @@ export default function App() {
       });
     } finally {
       setIsGeneratingRekapPDF(false);
+    }
+  };
+
+  const toggleDesa = (desa: string) => {
+    setSelectedDesas((prev) => {
+      const next = new Set(prev);
+      if (next.has(desa)) next.delete(desa);
+      else next.add(desa);
+      return next;
+    });
+  };
+
+  const toggleBulan = (key: string) => {
+    setSelectedBulans((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
+
+  const allDesasSelected = selectedDesas.size === availableDesas.length;
+  const someDesasSelected = selectedDesas.size > 0 && !allDesasSelected;
+  const allBulansSelected = selectedBulans.size === availableBulans.length;
+  const someBulansSelected = selectedBulans.size > 0 && !allBulansSelected;
+
+  const toggleAllDesas = () => {
+    if (allDesasSelected) {
+      setSelectedDesas(new Set());
+    } else {
+      setSelectedDesas(new Set(availableDesas));
+    }
+  };
+
+  const toggleAllBulans = () => {
+    if (allBulansSelected) {
+      setSelectedBulans(new Set());
+    } else {
+      setSelectedBulans(new Set(availableBulans.map((b) => b.key)));
     }
   };
 
@@ -650,6 +748,141 @@ export default function App() {
 
         <Footer />
         <Toaster />
+
+        {/* Rekap Filter Dialog */}
+        <Dialog open={rekapDialogOpen} onOpenChange={setRekapDialogOpen}>
+          <DialogContent
+            className="max-w-md max-h-[80vh] overflow-y-auto"
+            data-ocid="rekap.dialog"
+          >
+            <DialogHeader>
+              <DialogTitle>Filter Rekap PDF</DialogTitle>
+              <DialogDescription>
+                Pilih desa dan bulan yang ingin dimasukkan dalam rekap
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-6 py-2">
+              {/* Pilih Desa */}
+              <div>
+                <h4 className="font-semibold text-sm mb-3">Pilih Desa</h4>
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      id="all-desas"
+                      checked={
+                        allDesasSelected
+                          ? true
+                          : someDesasSelected
+                            ? "indeterminate"
+                            : false
+                      }
+                      onCheckedChange={toggleAllDesas}
+                      data-ocid="rekap.desa.checkbox"
+                    />
+                    <label
+                      htmlFor="all-desas"
+                      className="text-sm font-medium cursor-pointer"
+                    >
+                      Semua Desa
+                    </label>
+                  </div>
+                  <div className="pl-4 space-y-2 border-l-2 border-muted">
+                    {availableDesas.map((desa, idx) => (
+                      <div key={desa} className="flex items-center gap-2">
+                        <Checkbox
+                          id={`desa-${idx}`}
+                          checked={selectedDesas.has(desa)}
+                          onCheckedChange={() => toggleDesa(desa)}
+                          data-ocid={`rekap.desa.item.${idx + 1}`}
+                        />
+                        <label
+                          htmlFor={`desa-${idx}`}
+                          className="text-sm cursor-pointer"
+                        >
+                          {desa}
+                        </label>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Pilih Bulan */}
+              <div>
+                <h4 className="font-semibold text-sm mb-3">Pilih Bulan</h4>
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      id="all-bulans"
+                      checked={
+                        allBulansSelected
+                          ? true
+                          : someBulansSelected
+                            ? "indeterminate"
+                            : false
+                      }
+                      onCheckedChange={toggleAllBulans}
+                      data-ocid="rekap.bulan.checkbox"
+                    />
+                    <label
+                      htmlFor="all-bulans"
+                      className="text-sm font-medium cursor-pointer"
+                    >
+                      Semua Bulan
+                    </label>
+                  </div>
+                  <div className="pl-4 space-y-2 border-l-2 border-muted">
+                    {availableBulans.map((bulan, idx) => (
+                      <div key={bulan.key} className="flex items-center gap-2">
+                        <Checkbox
+                          id={`bulan-${idx}`}
+                          checked={selectedBulans.has(bulan.key)}
+                          onCheckedChange={() => toggleBulan(bulan.key)}
+                          data-ocid={`rekap.bulan.item.${idx + 1}`}
+                        />
+                        <label
+                          htmlFor={`bulan-${idx}`}
+                          className="text-sm cursor-pointer"
+                        >
+                          {bulan.label}
+                        </label>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setRekapDialogOpen(false)}
+                data-ocid="rekap.cancel_button"
+              >
+                Batal
+              </Button>
+              <Button
+                onClick={handleConfirmRekapDownload}
+                disabled={
+                  selectedDesas.size === 0 ||
+                  selectedBulans.size === 0 ||
+                  isGeneratingRekapPDF
+                }
+                data-ocid="rekap.confirm_button"
+              >
+                {isGeneratingRekapPDF ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                    Membuat Rekap...
+                  </>
+                ) : (
+                  "Download Rekap"
+                )}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
     </ThemeProvider>
   );
